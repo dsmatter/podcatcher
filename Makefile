@@ -1,7 +1,7 @@
-all: build cptest
+all: build
 
 build: podcatcher.hs
-	ghc -threaded $<
+	ghc -threaded podcatcher.hs
 
 cptest: podcatcher
 	cp $< testing
