@@ -26,6 +26,22 @@ feedFileName = "feed.url"
 
 -- Types --
 type FeedDir = FilePath
+type FeedUrl = String
+type FeedFile = FilePath
+
+-- Data --
+data PodcastFeed = PodcastFeed { dir :: FeedDir, url :: FeedUrl, localFiles :: [FeedFile], remoteFiles :: [FeedFile] }
+  deriving (Show,Eq)
+
+newPodcastFeed :: FeedDir -> PodcastFeed
+newPodcastFeed dir = PodcastFeed dir "" [] []
+
+mkPodcastFeed :: (FeedDir,FeedUrl) -> [FeedFile] -> PodcastFeed
+mkPodcastFeed (dir,url) localFiles = PodcastFeed dir url localFiles []
+
+addRemoteFiles :: PodcastFeed -> [FeedFile] -> PodcastFeed
+addRemoteFiles pf = PodcastFeed (dir pf) (url pf) (localFiles pf)
+
 
 -- Pure functions --
 filterDirs :: [String] -> [FilePath] -> [FilePath]
@@ -45,6 +61,43 @@ validFeedDirs :: [(FeedDir,Maybe String)] -> [(FeedDir,String)]
 validFeedDirs = map extractUrl . filter validFeedDir
   where extractUrl (dir,url) = (dir,fromJust url)
 
+validRss :: [(PodcastFeed,Maybe Feed)] -> [(PodcastFeed,Feed)]
+validRss = map extractFeed . filter isRssValid
+  where isRssValid (_,Nothing) = False
+        isRssValid (_,Just _) = True
+        extractFeed (p,f) = (p,fromJust f)
+
+itemToEnclosure :: Item -> Maybe String
+itemToEnclosure (XMLItem element) =
+  let enclosureElement = findElement (QName "enclosure" Nothing Nothing) element in
+    Control.Monad.join $ fmap (findAttr (QName "url" Nothing Nothing)) enclosureElement
+itemToEnclosure item =
+    case (getItemEnclosure item) of
+      Nothing -> Nothing
+      Just (url,_,_) -> Just url
+
+getRemoteFiles :: [(PodcastFeed,Feed)] -> [PodcastFeed]
+getRemoteFiles = map remoteFiles
+  where remoteFiles (pf,f) = let rf = catMaybes $ map itemToEnclosure $ feedItems f
+                             in addRemoteFiles pf rf
+
+mkTorrent :: FeedFile -> FeedFile
+mkTorrent = (++".torrent")
+
+eqFeedFile :: FeedFile -> FeedFile -> Bool
+eqFeedFile a b = let aa = takeFileName a
+                 in let bb = takeFileName b
+                    in aa == bb || (mkTorrent aa) == bb || aa == (mkTorrent bb)
+
+getNewFiles :: [PodcastFeed] -> [(PodcastFeed,[String])]
+getNewFiles = map result
+  where result pf = (pf,newFiles (remoteFiles pf) (localFiles pf))
+        newFiles = h []
+        h acc [] _ = acc
+        h acc (rf:rfs) lf = if any (eqFeedFile rf) lf
+                             then acc
+                             else h (rf:acc) rfs lf
+
 -- IO functions --
 getFeedDirs :: IO [FeedDir]
 getFeedDirs = do
@@ -60,115 +113,73 @@ getFeedUrls = MP.mapM getUrl
         errHandler :: IOError -> IO (Maybe a)
         errHandler _ = return Nothing
 
+getFeedLocalFiles :: [FeedDir] -> IO [[FeedFile]]
+getFeedLocalFiles = MP.mapM getFeedContent
+  where getFeedContent = fmap reverse . getDirectoryContents
+
+getOneFeedRss :: PodcastFeed -> IO (Maybe Feed)
+getOneFeedRss feed = do
+  rss <- openAsFeed $ url feed
+  case rss of
+    Left e -> putStrLn e >> return Nothing
+    Right f -> putStrLn ("Checked " ++ dir feed) >> return (Just f)
+
+getFeedRss :: [PodcastFeed] -> IO [Maybe Feed]
+getFeedRss = MP.mapM getOneFeedRss
+
+getPodcastFeeds :: [FeedDir] -> IO [PodcastFeed]
+getPodcastFeeds dirs = do
+  -- Try to get all feed URLs
+  feedUrls <- getFeedUrls dirs
+
+  -- Link directory to URL and prune invalid feeds (i.e. the ones without a feed URL)
+  let feedDirsWithUrls = validFeedDirs $ zip dirs feedUrls
+
+  -- Get the local feed files for each directory
+  feedLocalFiles <- getFeedLocalFiles $ map fst feedDirsWithUrls
+
+  -- Make a podcast feed (w/o any remote files, yet)
+  let feeds = zipWith mkPodcastFeed feedDirsWithUrls feedLocalFiles
+
+  -- Get RSS for each feed
+  feedRss <- getFeedRss feeds
+
+  -- Link feeds to RSS and prune invalid entries
+  let feedsWithRss = validRss $ zip feeds feedRss
+
+  -- Make podcast feeds with all information
+  return $ getRemoteFiles feedsWithRss
+
+showNewFiles :: (PodcastFeed,[String]) -> IO ()
+showNewFiles (_,[]) = return ()
+showNewFiles (pf,nf) = do
+  putStrLn $ "> " ++ (dir pf) ++ ":"
+  mapM_ (putStrLn . takeFileName) nf
+
+download :: FilePath -> String -> IO ()
+download destDir src = do
+  createProcess $ proc "aria2c" ["--file-allocation=none", "--seed-time=0", src, "-d", destDir]
+  return ()
+
+downloadAll :: [(PodcastFeed,[String])] -> IO ()
+downloadAll = mapM_ dl
+  where dl (pf,dfs) = mapM_ (\df -> download (dir pf) df) dfs
+
 -- Main --
 main = do
   putStrLn "Hello, world"
   args <- getArgs
+  dirs <- fmap (filterDirs args) getFeedDirs
+  feeds <- getPodcastFeeds dirs
+  let result = getNewFiles feeds
 
-  -- Apply the filter to the feed directories
-  feedDirs <- fmap (filterDirs args) getFeedDirs
+  -- Show files and ask
+  mapM_ showNewFiles result
+  putStr "Download? (Y/n) > "
+  hFlush stdout
+  answer <- getLine
 
-  -- Get the feed URLs for our feed directories
-  feedUrls <- getFeedUrls feedDirs
-
-  -- Keep only valid feed directories and link them to the
-  -- corresponding feed URL
-  let feedDirsWithUrls = validFeedDirs $ zip feedDirs feedUrls
-
-  mapM_ (putStrLn . show) feedDirsWithUrls
-
---getDirs :: IO [FilePath]
---getDirs = do
---  dirs <- fmap pruneImplicitDirs $ getDirectoryContents "."
---  filterM doesDirectoryExist dirs
-
---readFeedAddress :: FilePath -> IO String
---readFeedAddress = fmap head . fmap lines . readFile
-
---feedPathToAddress :: (FilePath,FilePath) -> IO (FilePath, String)
---feedPathToAddress (a,b) = do
---  feedAddress <- readFeedAddress b
---  return (a,feedAddress)
-
---getFeed :: FeedDir -> IO (Either String Feed)
---getFeed FeedDir { dir = dir,  feedUrl = url } = do
---  res <- openAsFeed url
---  putStrLn $ "Checked " ++ dir
---  return res
-
---pruneExistungUrls :: (FeedDir,[String],[FilePath]) -> (FeedDir,[String])
---pruneExistungUrls (fd,urls,dirEnts) = (fd,pruneHelper dirEnts urls [])
---  where pruneHelper _ [] acc = acc
---        pruneHelper dirEnts (url:xs) acc =
---          let toCheck = takeFileName url in
---            if any (\x -> x == toCheck || replace ".torrent" "" x == toCheck) dirEnts
---              then acc
---              else pruneHelper dirEnts xs (url:acc)
-
---getDirEnts :: FeedDir -> IO [FilePath]
---getDirEnts FeedDir { dir = dir, feedUrl = _ } = getDirectoryContents dir
-
---printFeedData :: [(FeedDir,[String])] -> IO ()
---printFeedData xs = mapM_ h xs
---  where h (fd,[])   = return ()
---        h (fd,urls) = do
---                        putStrLn $ "> Updates for " ++ (dir fd)
---                        mapM_ (putStrLn . takeFileName) urls
-
---downloadFeedData :: [(FeedDir,[String])] -> IO ()
---downloadFeedData xs = mapM_ h xs
---  where h (fd,urls) = mapM_ (\url -> download (dir fd) url) urls
-
---download :: FilePath -> String -> IO ()
---download destDir src = do
---  createProcess $ proc "aria2c" ["--file-allocation=none", "--seed-time=0", src, "-d", destDir]
---  return ()
-
---main = do
---  args <- getArgs
---  dirs <- liftM (filterDirs args) getDirs
---  feedPaths <- filterM (\(_,p) -> doesFileExist p) $ zip dirs $ map feedFilePath dirs
---  feedUrls <- fmap (map mkFeedDir) $ mapM feedPathToAddress feedPaths
---  dirEnts <- newEmptyMVar
-
---  forkIO $ do
---    tmp <- mapM getDirEnts feedUrls
---    putMVar dirEnts $! tmp
-
---  feeds <- MP.mapM getFeed feedUrls
---  putStrLn "All feeds down"
-
---  dents <- takeMVar dirEnts
-
---  let feedData = zip3 feedUrls (map getEnclosures feeds) dents
---  let feedDataPruned = parMap rdeepseq pruneExistungUrls feedData
-
---  if isFeedDataEmpty feedDataPruned
---  then return ()
---  else do
---    printFeedData feedDataPruned
---    putStr "Download? (Y/n) > "
---    hFlush stdout
---    answer <- getLine
---    if answer /= "" && (head answer == 'n' || head answer == 'N')
---    then putStrLn "Dann nicht..."
---    else downloadFeedData feedDataPruned
-
-
---getEnclosures :: Either String Feed -> [String]
---getEnclosures (Left _) = []
---getEnclosures (Right feed) = catMaybes $ map itemToEnclosure $ feedItems feed
-
---isFeedDataEmpty :: [(FeedDir,[String])] -> Bool
---isFeedDataEmpty xs = all ((==) []) $ map h xs
---  where h (fd,urls) = urls
-
---itemToEnclosure :: Item -> Maybe String
---itemToEnclosure (XMLItem element) =
---  let enclosureElement = findElement (QName "enclosure" Nothing Nothing) element in
---    Control.Monad.join $ fmap (findAttr (QName "url" Nothing Nothing)) enclosureElement
---itemToEnclosure item =
---    case (getItemEnclosure item) of
---      Nothing -> Nothing
---      Just (url,_,_) -> Just url
-
+  -- Act accordingly
+  if answer /= "" && (head answer == 'n' || head answer == 'N')
+  then putStrLn "Dann nicht..."
+  else downloadAll result
