@@ -173,6 +173,7 @@ main = do
   let result = getNewFiles feeds
 
   -- Show files and ask
+  putStrLn "=== New episodes ==="
   mapM_ showNewFiles result
   putStr "Download? (Y/n) > "
   hFlush stdout
