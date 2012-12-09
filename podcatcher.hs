@@ -37,6 +37,14 @@ pruneImplicitDirs = filter (\p -> p /= "." && p /= "..")
 feedFilePath :: FeedDir -> FilePath
 feedFilePath dir = joinPath [dir, feedFileName]
 
+validFeedDir :: (FeedDir,Maybe String) -> Bool
+validFeedDir (_,Nothing) = False
+validFeedDir (_,Just _) = True
+
+validFeedDirs :: [(FeedDir,Maybe String)] -> [(FeedDir,String)]
+validFeedDirs = map extractUrl . filter validFeedDir
+  where extractUrl (dir,url) = (dir,fromJust url)
+
 -- IO functions --
 getFeedDirs :: IO [FeedDir]
 getFeedDirs = do
@@ -52,20 +60,22 @@ getFeedUrls = MP.mapM getUrl
         errHandler :: IOError -> IO (Maybe a)
         errHandler _ = return Nothing
 
-validFeedDir :: (FeedDir,Maybe String) -> Bool
-validFeedDir (_,Nothing) = False
-validFeedDir (_,Just _) = True
-
-
 -- Main --
 main = do
   putStrLn "Hello, world"
   args <- getArgs
+
+  -- Apply the filter to the feed directories
   feedDirs <- fmap (filterDirs args) getFeedDirs
+
+  -- Get the feed URLs for our feed directories
   feedUrls <- getFeedUrls feedDirs
-  let feedDirsWithUrls = map extractUrl $ filter validFeedDir $ zip feedDirs feedUrls
+
+  -- Keep only valid feed directories and link them to the
+  -- corresponding feed URL
+  let feedDirsWithUrls = validFeedDirs $ zip feedDirs feedUrls
+
   mapM_ (putStrLn . show) feedDirsWithUrls
-      where extractUrl (dir,url) = (dir,fromJust url)
 
 --getDirs :: IO [FilePath]
 --getDirs = do
