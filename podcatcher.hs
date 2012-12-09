@@ -167,7 +167,6 @@ downloadAll = mapM_ dl
 
 -- Main --
 main = do
-  putStrLn "Hello, world"
   args <- getArgs
   dirs <- fmap (filterDirs args) getFeedDirs
   feeds <- getPodcastFeeds dirs
