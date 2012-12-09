@@ -158,7 +158,7 @@ showNewFiles (pf,nf) = do
 
 download :: FilePath -> String -> IO ()
 download destDir src = do
-  createProcess $ proc "aria2c" ["--file-allocation=none", "--seed-time=0", src, "-d", destDir]
+  createProcess $ proc "aria2c" ["--file-allocation=none", "--seed-time=0", "-d", destDir, "-o", (takeFileName src), src]
   return ()
 
 downloadAll :: [(PodcastFeed,[String])] -> IO ()
