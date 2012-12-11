@@ -21,18 +21,25 @@ import Control.Parallel.Strategies
 import Control.DeepSeq
 import qualified Control.Monad.Parallel as MP
 
+--
 -- Globals --
+--
 feedFileName = "feed.url"
 
+--
 -- Types --
+--
 type FeedDir = FilePath
 type FeedUrl = String
 type FeedFile = FilePath
 
+--
 -- Data --
+--
 data PodcastFeed = PodcastFeed { dir :: FeedDir, url :: FeedUrl, localFiles :: [FeedFile], remoteFiles :: [FeedFile] }
   deriving (Show,Eq)
 
+-- Some helper constructors
 newPodcastFeed :: FeedDir -> PodcastFeed
 newPodcastFeed dir = PodcastFeed dir "" [] []
 
@@ -43,7 +50,11 @@ addRemoteFiles :: PodcastFeed -> [FeedFile] -> PodcastFeed
 addRemoteFiles pf = PodcastFeed (dir pf) (url pf) (localFiles pf)
 
 
+--
 -- Pure functions --
+--
+
+-- Directory handling
 filterDirs :: [String] -> [FilePath] -> [FilePath]
 filterDirs filters dirs = foldr (\f -> filter $ isInfixOf f) dirs filters
 
@@ -53,6 +64,7 @@ pruneImplicitDirs = filter (\p -> p /= "." && p /= "..")
 feedFilePath :: FeedDir -> FilePath
 feedFilePath dir = joinPath [dir, feedFileName]
 
+-- Pruning of Nothing entries
 validFeedDir :: (FeedDir,Maybe String) -> Bool
 validFeedDir (_,Nothing) = False
 validFeedDir (_,Just _) = True
@@ -67,6 +79,7 @@ validRss = map extractFeed . filter isRssValid
         isRssValid (_,Just _) = True
         extractFeed (p,f) = (p,fromJust f)
 
+-- Extract the URLs from RSS
 itemToEnclosure :: Item -> Maybe String
 itemToEnclosure (XMLItem element) =
   let enclosureElement = findElement (QName "enclosure" Nothing Nothing) element in
@@ -76,19 +89,23 @@ itemToEnclosure item =
       Nothing -> Nothing
       Just (url,_,_) -> Just url
 
+-- Add remote files to a PodcastFeed
 getRemoteFiles :: [(PodcastFeed,Feed)] -> [PodcastFeed]
 getRemoteFiles = map remoteFiles
   where remoteFiles (pf,f) = let rf = catMaybes $ map itemToEnclosure $ feedItems f
                              in addRemoteFiles pf rf
 
+-- Append ".torrent"
 mkTorrent :: FeedFile -> FeedFile
 mkTorrent = (++".torrent")
 
+-- Compare the file name of two file paths while being isomorph on .torrent extension
 eqFeedFile :: FeedFile -> FeedFile -> Bool
 eqFeedFile a b = let aa = takeFileName a
                  in let bb = takeFileName b
                     in aa == bb || (mkTorrent aa) == bb || aa == (mkTorrent bb)
 
+-- Append a list of new files to a PodcastFeed
 getNewFiles :: [PodcastFeed] -> [(PodcastFeed,[String])]
 getNewFiles = map result
   where result pf = (pf,newFiles (remoteFiles pf) (localFiles pf))
@@ -98,7 +115,9 @@ getNewFiles = map result
                              then acc
                              else h (rf:acc) rfs lf
 
+--
 -- IO functions --
+--
 getFeedDirs :: IO [FeedDir]
 getFeedDirs = do
   dirs <- fmap pruneImplicitDirs $ getDirectoryContents "."
@@ -165,7 +184,9 @@ downloadAll :: [(PodcastFeed,[String])] -> IO ()
 downloadAll = mapM_ dl
   where dl (pf,dfs) = mapM_ (\df -> download (dir pf) df) dfs
 
+--
 -- Main --
+--
 main = do
   args <- getArgs
   dirs <- fmap (filterDirs args) getFeedDirs
