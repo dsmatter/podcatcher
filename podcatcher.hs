@@ -179,14 +179,34 @@ showNewFiles (pf,nf) = do
   putStrLn $ "> " ++ (dir pf) ++ ":"
   mapM_ (putStrLn . takeFileName) nf
 
-download :: FilePath -> String -> IO ()
+download :: FilePath -> String -> IO ProcessHandle
 download destDir src = do
-  createProcess $ proc "aria2c" ["--file-allocation=none", "--seed-time=0", "-d", destDir, "-o", (takeFileName src), src]
-  return ()
+  (_,_,_,h) <- createProcess $ proc "aria2c" ["--file-allocation=none", "--seed-time=0", "-d", destDir, "-o", (takeFileName src), src]
+  return h
 
 downloadAll :: [(PodcastFeed,[String])] -> IO ()
-downloadAll = mapM_ dl
-  where dl (pf,dfs) = mapM_ (\df -> download (dir pf) df) dfs
+downloadAll feeds = do
+  handles <- fmap concat $ mapM dlFeed feeds
+  mapM_ waitForProcess handles
+
+  where dlFeed (pf,dfs) = mapM (dlFile pf) dfs
+        dlFile pf df = download (dir pf) df
+
+askAndDownload :: [(PodcastFeed,[String])] -> IO ()
+askAndDownload result | isResultEmpty result = putStrLn "Nothing new"
+                      | otherwise = h result
+  where h result = do
+          -- Show files and ask
+          putStrLn "=== New episodes ==="
+          mapM_ showNewFiles result
+          putStr "Download? (Y/n) > "
+          hFlush stdout
+          answer <- getLine
+
+          -- Act accordingly
+          if answer /= "" && (head answer == 'n' || head answer == 'N')
+          then putStrLn "kthxbye"
+          else downloadAll result
 
 --
 -- Main --
@@ -195,16 +215,5 @@ main = do
   args <- getArgs
   dirs <- fmap (filterDirs args) getFeedDirs
   feeds <- getPodcastFeeds dirs
-  let result = getNewFiles feeds
+  askAndDownload $ getNewFiles feeds
 
-  -- Show files and ask
-  putStrLn "=== New episodes ==="
-  mapM_ showNewFiles result
-  putStr "Download? (Y/n) > "
-  hFlush stdout
-  answer <- getLine
-
-  -- Act accordingly
-  if answer /= "" && (head answer == 'n' || head answer == 'N')
-  then putStrLn "Dann nicht..."
-  else downloadAll result
