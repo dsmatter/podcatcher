@@ -115,6 +115,10 @@ getNewFiles = map result
                              then acc
                              else h (rf:acc) rfs lf
 
+isResultEmpty :: [(PodcastFeed,[String])] -> Bool
+isResultEmpty = all isFeedEmpty
+  where isFeedEmpty (_,[]) = True
+        isFeedEmpty _ = False
 --
 -- IO functions --
 --
