@@ -1,4 +1,3 @@
--- Imports --
 import Prelude hiding (catch)
 import Control.Monad
 import Control.Exception
@@ -21,34 +20,36 @@ import Control.Parallel.Strategies
 import Control.DeepSeq
 import qualified Control.Monad.Parallel as MP
 
---
--- Globals --
---
 feedFileName = "feed.url"
 
---
--- Types --
---
 type FeedDir = FilePath
 type FeedUrl = String
 type FeedFile = FilePath
 
---
--- Data --
---
-data PodcastFeed = PodcastFeed { dir :: FeedDir, url :: FeedUrl, localFiles :: [FeedFile], remoteFiles :: [FeedFile] }
-  deriving (Show,Eq)
+data Podcast = Podcast { podcastDir :: FeedDir, podcastFeedUrl :: FeedUrl }
+  deriving (Show, Eq)
 
--- Some helper constructors
-newPodcastFeed :: FeedDir -> PodcastFeed
-newPodcastFeed dir = PodcastFeed dir "" [] []
+-- FIXME: episode name
+data Episode = Episode { episodeUrl :: FeedUrl, episodePath :: FilePath }
+  deriving (Show, Eq)
 
-mkPodcastFeed :: (FeedDir,FeedUrl) -> [FeedFile] -> PodcastFeed
-mkPodcastFeed (dir,url) localFiles = PodcastFeed dir url localFiles []
+main = do
+  args <- getArgs
+  podcasts <- getPodcasts args
+  newEpisodes <- fmap concat $ MP.mapM getNewEpisodes podcasts
 
-addRemoteFiles :: PodcastFeed -> [FeedFile] -> PodcastFeed
-addRemoteFiles pf = PodcastFeed (dir pf) (url pf) (localFiles pf)
-
+  case newEpisodes of
+    [] -> putStrLn "Maybe next time :/"
+    _ -> do
+      putStrLn "=== New episodes ==="
+      showEpisodes newEpisodes
+      putStr "Download? (Y/n) > "
+      hFlush stdout
+      answer <- getLine
+      -- Act accordingly
+      if answer /= "" && (head answer == 'n' || head answer == 'N')
+      then putStrLn "kthxbye"
+      else downloadAll newEpisodes
 
 --
 -- Pure functions --
@@ -56,7 +57,9 @@ addRemoteFiles pf = PodcastFeed (dir pf) (url pf) (localFiles pf)
 
 -- Directory handling
 filterDirs :: [String] -> [FilePath] -> [FilePath]
-filterDirs filters dirs = foldr (\f -> filter $ isInfixOf f) dirs filters
+filterDirs [] = id
+filterDirs filters = filter matchesAnyFiler
+  where matchesAnyFiler dir = any (flip isInfixOf dir) filters
 
 pruneImplicitDirs :: [FilePath] -> [FilePath]
 pruneImplicitDirs = filter (\p -> p /= "." && p /= "..")
@@ -64,22 +67,7 @@ pruneImplicitDirs = filter (\p -> p /= "." && p /= "..")
 feedFilePath :: FeedDir -> FilePath
 feedFilePath dir = joinPath [dir, feedFileName]
 
--- Pruning of Nothing entries
-validFeedDir :: (FeedDir,Maybe String) -> Bool
-validFeedDir (_,Nothing) = False
-validFeedDir (_,Just _) = True
-
-validFeedDirs :: [(FeedDir,Maybe String)] -> [(FeedDir,String)]
-validFeedDirs = map extractUrl . filter validFeedDir
-  where extractUrl (dir,url) = (dir,fromJust url)
-
-validRss :: [(PodcastFeed,Maybe Feed)] -> [(PodcastFeed,Feed)]
-validRss = map extractFeed . filter isRssValid
-  where isRssValid (_,Nothing) = False
-        isRssValid (_,Just _) = True
-        extractFeed (p,f) = (p,fromJust f)
-
--- Extract the URLs from RSS
+---- Extract the URLs from RSS
 itemToEnclosure :: Item -> Maybe String
 itemToEnclosure (XMLItem element) =
   let enclosureElement = findElement (QName "enclosure" Nothing Nothing) element in
@@ -89,131 +77,65 @@ itemToEnclosure item =
       Nothing -> Nothing
       Just (url,_,_) -> Just url
 
--- Add remote files to a PodcastFeed
-getRemoteFiles :: [(PodcastFeed,Feed)] -> [PodcastFeed]
-getRemoteFiles = map remoteFiles
-  where remoteFiles (pf,f) = let rf = catMaybes $ map itemToEnclosure $ feedItems f
-                             in addRemoteFiles pf rf
-
--- Append ".torrent"
-mkTorrent :: FeedFile -> FeedFile
-mkTorrent = (++".torrent")
-
--- Compare the file name of two file paths while being isomorph on .torrent extension
-eqFeedFile :: FeedFile -> FeedFile -> Bool
-eqFeedFile a b = let aa = takeFileName a
-                 in let bb = takeFileName b
-                    in aa == bb || (mkTorrent aa) == bb || aa == (mkTorrent bb)
-
--- Append a list of new files to a PodcastFeed
-getNewFiles :: [PodcastFeed] -> [(PodcastFeed,[String])]
-getNewFiles = map result
-  where result pf = (pf,newFiles (remoteFiles pf) (localFiles pf))
-        newFiles = h []
-        h acc [] _ = acc
-        h acc (rf:rfs) lf = if any (eqFeedFile rf) lf
-                             then acc
-                             else h (rf:acc) rfs lf
-
-isResultEmpty :: [(PodcastFeed,[String])] -> Bool
-isResultEmpty = all isFeedEmpty
-  where isFeedEmpty (_,[]) = True
-        isFeedEmpty _ = False
---
--- IO functions --
---
-getFeedDirs :: IO [FeedDir]
-getFeedDirs = do
+----
+---- IO functions --
+----
+getLocalDirs :: IO [FeedDir]
+getLocalDirs = do
   dirs <- fmap pruneImplicitDirs $ getDirectoryContents "."
   filterM doesDirectoryExist dirs
 
-getFeedUrls :: [FeedDir] -> IO [Maybe String]
-getFeedUrls = MP.mapM getUrl
-  where getUrl dir = catch (getUrlThrow dir) errHandler
-        getUrlThrow dir = do
-          let content = readFile $ feedFilePath dir
-          fmap (Just . head . lines) content
-        errHandler :: IOError -> IO (Maybe a)
+getFeedUrl :: FeedDir -> IO (Maybe String)
+getFeedUrl dir = catch readFeedUrlFile errHandler
+  where readFeedUrlFile = fmap (Just . head . lines) $ readFile (feedFilePath dir)
+        errHandler :: IOError -> IO (Maybe String)
         errHandler _ = return Nothing
 
-getFeedLocalFiles :: [FeedDir] -> IO [[FeedFile]]
-getFeedLocalFiles = MP.mapM getFeedContent
-  where getFeedContent = fmap reverse . getDirectoryContents
+getPodcasts :: [String] -> IO [Podcast]
+getPodcasts filters = do
+  ldirs <- fmap (filterDirs filters) getLocalDirs
+  mpodcasts <- MP.mapM toPodcast ldirs
+  return $ catMaybes mpodcasts
+    where toPodcast dir = do
+            feedUrl <- getFeedUrl dir
+            return $ fmap (Podcast dir) feedUrl
 
-getOneFeedRss :: PodcastFeed -> IO (Maybe Feed)
-getOneFeedRss feed = do
-  rss <- openAsFeed $ url feed
-  case rss of
-    Left e -> putStrLn e >> return Nothing
-    Right f -> putStrLn ("Checked " ++ dir feed) >> return (Just f)
+getNewEpisodes :: Podcast -> IO [Episode]
+getNewEpisodes (Podcast pdir purl) = do
+  mrss <- openAsFeed purl
+  putStrLn $ "Checking " ++ pdir
+  case mrss of
+    Left _ -> return []
+    Right rss -> do
+      let episodeUrls = catMaybes $ map itemToEnclosure $ feedItems rss
+      let episodes = map toEpisode episodeUrls
+      newEpisodes <- takeWhileM (fmap not . episodeExists) episodes
+      return newEpisodes
+        where toEpisode eurl = Episode eurl $ joinPath [pdir, takeFileName eurl]
 
-getFeedRss :: [PodcastFeed] -> IO [Maybe Feed]
-getFeedRss = MP.mapM getOneFeedRss
+episodeExists :: Episode -> IO Bool
+episodeExists (Episode _ fn) =
+  let fnt = replace ".torrent" "" fn
+  in fmap or $ sequence [doesFileExist fn, doesFileExist fnt]
 
-getPodcastFeeds :: [FeedDir] -> IO [PodcastFeed]
-getPodcastFeeds dirs = do
-  -- Try to get all feed URLs
-  feedUrls <- getFeedUrls dirs
+takeWhileM :: Monad m => (a -> m Bool) -> [a] -> m [a]
+takeWhileM _ [] = return []
+takeWhileM p (x:xs) = do
+  flg <- p x
+  if flg
+  then liftM (x:) $ takeWhileM p xs
+  else return []
 
-  -- Link directory to URL and prune invalid feeds (i.e. the ones without a feed URL)
-  let feedDirsWithUrls = validFeedDirs $ zip dirs feedUrls
+showEpisodes :: [Episode] -> IO ()
+showEpisodes = mapM_ (putStrLn . episodePath)
 
-  -- Get the local feed files for each directory
-  feedLocalFiles <- getFeedLocalFiles $ map fst feedDirsWithUrls
-
-  -- Make a podcast feed (w/o any remote files, yet)
-  let feeds = zipWith mkPodcastFeed feedDirsWithUrls feedLocalFiles
-
-  -- Get RSS for each feed
-  feedRss <- getFeedRss feeds
-
-  -- Link feeds to RSS and prune invalid entries
-  let feedsWithRss = validRss $ zip feeds feedRss
-
-  -- Make podcast feeds with all information
-  return $ getRemoteFiles feedsWithRss
-
-showNewFiles :: (PodcastFeed,[String]) -> IO ()
-showNewFiles (_,[]) = return ()
-showNewFiles (pf,nf) = do
-  putStrLn $ "> " ++ (dir pf) ++ ":"
-  mapM_ (putStrLn . takeFileName) nf
-
-download :: FilePath -> String -> IO ProcessHandle
-download destDir src = do
-  (_,_,_,h) <- createProcess $ proc "aria2c" ["--file-allocation=none", "--seed-time=0", "-d", destDir, "-o", (takeFileName src), src]
+downloadEpisode :: Episode -> IO ProcessHandle
+downloadEpisode (Episode url dst) = do
+  (_,_,_,h) <- createProcess $ proc "aria2c" ["--file-allocation=none", "--seed-time=0", "-d", (takeDirectory dst), "-o", (takeFileName dst), url]
   return h
 
-downloadAll :: [(PodcastFeed,[String])] -> IO ()
-downloadAll feeds = do
-  handles <- fmap concat $ mapM dlFeed feeds
-  mapM_ waitForProcess handles
-
-  where dlFeed (pf,dfs) = mapM (dlFile pf) dfs
-        dlFile pf df = download (dir pf) df
-
-askAndDownload :: [(PodcastFeed,[String])] -> IO ()
-askAndDownload result | isResultEmpty result = putStrLn "Nothing new"
-                      | otherwise = h result
-  where h result = do
-          -- Show files and ask
-          putStrLn "=== New episodes ==="
-          mapM_ showNewFiles result
-          putStr "Download? (Y/n) > "
-          hFlush stdout
-          answer <- getLine
-
-          -- Act accordingly
-          if answer /= "" && (head answer == 'n' || head answer == 'N')
-          then putStrLn "kthxbye"
-          else downloadAll result
-
---
--- Main --
---
-main = do
-  args <- getArgs
-  dirs <- fmap (filterDirs args) getFeedDirs
-  feeds <- getPodcastFeeds dirs
-  askAndDownload $ getNewFiles feeds
+downloadAll :: [Episode] -> IO ()
+downloadAll es = do
+  phs <- mapM downloadEpisode es
+  mapM_ waitForProcess phs
 

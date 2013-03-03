@@ -1,6 +1,6 @@
-all: build
+all: podcatcher
 
-build: podcatcher.hs
+podcatcher: podcatcher.hs
 	ghc -threaded podcatcher.hs
 
 cptest: podcatcher
