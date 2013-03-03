@@ -14,10 +14,6 @@ import Text.Feed.Types
 import Text.Feed.Query
 import Text.XML.Light.Types
 import Text.XML.Light.Proc
-import Control.Concurrent
-import Control.Parallel
-import Control.Parallel.Strategies
-import Control.DeepSeq
 import qualified Control.Monad.Parallel as MP
 
 feedFileName = "feed.url"
