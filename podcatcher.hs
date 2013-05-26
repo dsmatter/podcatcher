@@ -1,4 +1,5 @@
 import Prelude hiding (catch)
+import Control.Applicative
 import Control.Monad
 import Control.Exception
 import Data.Maybe
@@ -32,7 +33,7 @@ data Episode = Episode { episodeUrl :: FeedUrl, episodePath :: FilePath }
 main = do
   args <- getArgs
   podcasts <- getPodcasts args
-  newEpisodes <- fmap concat $ MP.mapM getNewEpisodes podcasts
+  newEpisodes <- concat <$> MP.mapM getNewEpisodes podcasts
 
   case newEpisodes of
     [] -> putStrLn "Maybe next time :/"
@@ -54,8 +55,8 @@ main = do
 -- Directory handling
 filterDirs :: [String] -> [FilePath] -> [FilePath]
 filterDirs [] = id
-filterDirs filters = filter matchesAnyFiler
-  where matchesAnyFiler dir = any (flip isInfixOf dir) filters
+filterDirs filters = filter matchesAnyFilter
+  where matchesAnyFilter dir = any (flip isInfixOf dir) filters
 
 pruneImplicitDirs :: [FilePath] -> [FilePath]
 pruneImplicitDirs = filter (\p -> p /= "." && p /= "..")
@@ -66,8 +67,7 @@ feedFilePath dir = joinPath [dir, feedFileName]
 ---- Extract the URLs from RSS
 itemToEnclosure :: Item -> Maybe String
 itemToEnclosure (XMLItem element) =
-  let enclosureElement = findElement (QName "enclosure" Nothing Nothing) element in
-    Control.Monad.join $ fmap (findAttr (QName "url" Nothing Nothing)) enclosureElement
+  findElement (QName "enclosure" Nothing Nothing) element >>= findAttr (QName "url" Nothing Nothing)
 itemToEnclosure item =
     case (getItemEnclosure item) of
       Nothing -> Nothing
@@ -78,23 +78,23 @@ itemToEnclosure item =
 ----
 getLocalDirs :: IO [FeedDir]
 getLocalDirs = do
-  dirs <- fmap pruneImplicitDirs $ getDirectoryContents "."
+  dirs <- pruneImplicitDirs <$> getDirectoryContents "."
   filterM doesDirectoryExist dirs
 
 getFeedUrl :: FeedDir -> IO (Maybe String)
 getFeedUrl dir = catch readFeedUrlFile errHandler
-  where readFeedUrlFile = fmap (Just . head . lines) $ readFile (feedFilePath dir)
+  where readFeedUrlFile = Just . head . lines <$> readFile (feedFilePath dir)
         errHandler :: IOError -> IO (Maybe String)
         errHandler _ = return Nothing
 
 getPodcasts :: [String] -> IO [Podcast]
 getPodcasts filters = do
-  ldirs <- fmap (filterDirs filters) getLocalDirs
+  ldirs <- filterDirs filters <$> getLocalDirs
   mpodcasts <- MP.mapM toPodcast ldirs
   return $ catMaybes mpodcasts
     where toPodcast dir = do
             feedUrl <- getFeedUrl dir
-            return $ fmap (Podcast dir) feedUrl
+            return $ (Podcast dir) <$> feedUrl
 
 getNewEpisodes :: Podcast -> IO [Episode]
 getNewEpisodes (Podcast pdir purl) = do
@@ -112,7 +112,7 @@ getNewEpisodes (Podcast pdir purl) = do
 episodeExists :: Episode -> IO Bool
 episodeExists (Episode _ fn) =
   let fnt = replace ".torrent" "" fn
-  in fmap or $ sequence [doesFileExist fn, doesFileExist fnt]
+  in or <$> sequence [doesFileExist fn, doesFileExist fnt]
 
 takeWhileM :: Monad m => (a -> m Bool) -> [a] -> m [a]
 takeWhileM _ [] = return []
