@@ -1,0 +1,20 @@
+name:          podcatcher
+version:       0.0.1
+cabal-version: >= 1.8
+build-type:    Simple
+
+executable podcatcher
+    main-is:       podcatcher.hs
+
+    build-depends: base,
+                   process,
+                   directory,
+                   filepath,
+                   MissingH,
+                   monad-parallel,
+                   xml,
+                   feed,
+                   download-curl
+
+    ghc-options:   -threaded -O2
+
