@@ -5,6 +5,7 @@ import Control.Exception
 import Data.Maybe
 import Data.List
 import Data.String.Utils
+import Data.Tuple
 import System.FilePath
 import System.Directory
 import System.Environment
@@ -114,13 +115,10 @@ episodeExists (Episode _ fn) =
   let fnt = replace ".torrent" "" fn
   in or <$> sequence [doesFileExist fn, doesFileExist fnt]
 
-takeWhileM :: Monad m => (a -> m Bool) -> [a] -> m [a]
-takeWhileM _ [] = return []
-takeWhileM p (x:xs) = do
-  flg <- p x
-  if flg
-    then liftM (x:) $ takeWhileM p xs
-    else return []
+takeWhileM :: (Monad m) => (a -> m Bool) -> [a] -> m [a]
+takeWhileM f xs = do
+  bools <- mapM f xs
+  return $ map snd $ takeWhile fst $ zip bools xs
 
 showEpisodes :: [Episode] -> IO ()
 showEpisodes = mapM_ (putStrLn . episodePath)
