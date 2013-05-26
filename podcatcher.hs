@@ -45,8 +45,8 @@ main = do
       answer <- getLine
       -- Act accordingly
       if answer /= "" && (head answer == 'n' || head answer == 'N')
-      then putStrLn "kthxbye"
-      else downloadAll newEpisodes
+        then putStrLn "kthxbye"
+        else downloadAll newEpisodes
 
 --
 -- Pure functions --
@@ -119,8 +119,8 @@ takeWhileM _ [] = return []
 takeWhileM p (x:xs) = do
   flg <- p x
   if flg
-  then liftM (x:) $ takeWhileM p xs
-  else return []
+    then liftM (x:) $ takeWhileM p xs
+    else return []
 
 showEpisodes :: [Episode] -> IO ()
 showEpisodes = mapM_ (putStrLn . episodePath)
